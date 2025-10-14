@@ -1,6 +1,4 @@
-// trac.ts
-
-type BuiltIn = (t: TRAC) => string;
+import process from "node:process";
 
 type Part = string | Marker; // a chunk of literal text or a numbered marker
 
@@ -29,36 +27,43 @@ class Marker {
 }
 
 export class TRAC {
-    builtins: Record<string, BuiltIn> = {};
-
-    // persistent across execute() calls
     forms: Record<string, Part[]> = {};
 
     // runtime working state (reset per record)
     active: string[] = [];
     neutral: string[] = [];
     scan = 0;
+
     frames: Frame[] = [];
     args: string[] = [];
 
-    // characters to skip at step 3 (record/whitespace)
+    initial: string; // initial program to run
+
+    input: string[] = []; // input stream for rs/rc
+    output: (v: string) => void;
+
+    interactive: boolean = false;
+
+    meta: string = "'";
+
     private _skip_chars = new Set<string>(["\t", "\n", "\r", "'"]);
 
-    constructor(builtins?: Record<string, BuiltIn>) {
-        this._register_core_builtins();
-        if (builtins) {
-            Object.assign(this.builtins, builtins); // allow user overrides
-        }
+    constructor(initial: string, input: string[] | string, output: (v: string) => void, interactive = false) {
+        this.initial = initial;
+        this.input = Array.isArray(input) ? input : [input];
+        this.output = output;
+        this.interactive = interactive;
     }
 
-    execute(s: string): string {
-        // matches Python sample's printing of the input record
-        console.log(s);
+    async run() {
+        this._reset_processor(this.initial);
 
-        this._reset_processor_with(s);
         while (true) {
             // Step 2: end-of-active?
-            if (this.scan >= this.active.length) break;
+            if (this.scan >= this.active.length) {
+                if (!this.interactive) break;
+                this._reset_processor(this.initial);
+            }
 
             const ch = this.active[this.scan];
 
@@ -109,7 +114,7 @@ export class TRAC {
             // Step 9: end of function
             if (ch === ")") {
                 this._delete_active_char();
-                this._end_function_and_evaluate();
+                await this._end_function_and_evaluate();
                 continue;
             }
 
@@ -122,7 +127,7 @@ export class TRAC {
 
     // --- internals ---
 
-    private _reset_processor_with(program: string) {
+    private _reset_processor(program: string) {
         this.neutral.length = 0;
         this.active = Array.from(program);
         this.scan = 0;
@@ -152,8 +157,8 @@ export class TRAC {
     private _peek(...expect: string[]): boolean {
         let i = this.scan + 1;
         if (i + expect.length - 1 >= this.active.length) return false;
-        for (let off = 0; off < expect.length; off++) {
-            if (this.active[i + off] !== expect[off]) return false;
+        for (let offset = 0; offset < expect.length; offset += 1) {
+            if (this.active[i + offset] !== expect[offset]) return false;
         }
         return true;
     }
@@ -200,7 +205,7 @@ export class TRAC {
         frame.current_argument_start = this.neutral.length;
     }
 
-    private _end_function_and_evaluate() {
+    private async _end_function_and_evaluate() {
         if (!this.frames.length) {
             this._clear_processor();
             return;
@@ -222,17 +227,14 @@ export class TRAC {
         const name = args.length ? args[0] : "";
         this.args = args.slice(1);
         let value = "";
-        if (Object.prototype.hasOwnProperty.call(this.builtins, name)) {
-            try {
-                value = this.builtins[name](this);
-            } catch {
-                value = "";
-            }
+
+        const builtin = this[name];
+        if (this[name] && typeof this[name] === "function") {
+            value = await this[name]();
         } else {
             value = "";
         }
 
-        // deliver
         if (frame.mode === "neutral") {
             this.neutral.push(...Array.from(value));
         } else {
@@ -240,183 +242,294 @@ export class TRAC {
             this.scan = 0;
         }
 
-        this.args = []; // clear after call
+        this.args = [];
     }
 
-    private _register_core_builtins() {
-        const ds: BuiltIn = (t: TRAC): string => {
-            // #(ds,N,B) -> define/replace form N with body B.
-            // store as a list<Part> with a single literal chunk initially.
-            const name = t._arg(0);
-            const body = t._arg(1);
-            if (!name) return "";
-            t.forms[name] = [body]; // literal body, no markers yet
-            return "";
-        };
+    private async ds() {
+        // #(ds,N,B) -> define/replace form N with body B.
+        // store as a list<Part> with a single literal chunk initially.
+        const name = this._arg(0);
+        const body = this._arg(1);
+        if (!name) return "";
+        this.forms[name] = [body]; // literal body, no markers yet
+        console.log(`Defined form ${name} {${body}}`);
+        return "";
+    }
 
-        const ss: BuiltIn = (t: TRAC): string => {
-            /**
-             * #(ss,N,P1,P2,...) -> create ordinal segment markers in form N.
-             * Each non-null Pi is searched L->R and each occurrence (that does not cross
-             * an existing marker) is replaced by Marker(i).
-             */
-            const name = t._arg(0);
-            if (!(name in t.forms)) return "";
-            let parts = t.forms[name]; // list<Part>
+    private async ss() {
+        /**
+         * #(ss,N,P1,P2,...) -> create ordinal segment markers in form N.
+         * Each non-null Pi is searched L->R and each occurrence (that does not cross
+         * an existing marker) is replaced by Marker(i).
+         */
+        const name = this._arg(0);
+        if (!(name in this.forms)) return "";
+        let parts = this.forms[name]; // list<Part>
 
-            const replace_pattern_in_parts = (partsIn: Part[], pattern: string, num: number): Part[] => {
-                if (pattern === "") return partsIn;
+        const replace_pattern_in_parts = (partsIn: Part[], pattern: string, num: number): Part[] => {
+            if (pattern === "") return partsIn;
 
-                const out: Part[] = [];
-                for (const part of partsIn) {
-                    if (part instanceof Marker) {
-                        out.push(part);
-                        continue;
-                    }
-                    const s = part;
-                    let i = 0;
-                    const L = pattern.length;
-                    while (true) {
-                        const j = s.indexOf(pattern, i);
-                        if (j === -1) {
-                            out.push(s.slice(i));
-                            break;
-                        }
-                        out.push(s.slice(i, j)); // prefix
-                        out.push(new Marker(num)); // marker
-                        i = j + L; // continue after match
-                    }
-                }
-
-                // merge adjacent strings for cleanliness
-                const merged: Part[] = [];
-                for (const item of out) {
-                    if (merged.length && typeof merged[merged.length - 1] === "string" && typeof item === "string") {
-                        merged[merged.length - 1] = (merged[merged.length - 1] as string) + item;
-                    } else {
-                        merged.push(item);
-                    }
-                }
-                return merged;
-            };
-
-            // NOTE: t.args currently contains only parameters after the function name,
-            // so for ss: t.args = [N, P1, P2, ...]
-            // Markers are numbered by the ordinal position of Pi (1-based).
-            t.args.slice(1).forEach((pattern, idx) => {
-                if (pattern !== "") {
-                    parts = replace_pattern_in_parts(parts, pattern, idx + 1);
-                }
-            });
-
-            t.forms[name] = parts;
-            return "";
-        };
-
-        const cl: BuiltIn = (t: TRAC): string => {
-            /**
-             * #(cl,N,A1,A2,...) -> return the body of form N with markers filled:
-             * all #1 -> A1, #2 -> A2, ... (missing -> "", excess ignored)
-             */
-            const name = t._arg(0);
-            if (!(name in t.forms)) return "";
-            const parts = t.forms[name];
-
-            // Build replacement map 1->A1, 2->A2, ...
-            const replacement = new Map<number, string>();
-            for (let i = 0; i < t.args.length; i++) {
-                // t.args[0] is N
-                const ai = t.args[i + 1] ?? "";
-                replacement.set(i + 1, ai);
-            }
-
-            const chunks: string[] = [];
-            for (const part of parts) {
+            const out: Part[] = [];
+            for (const part of partsIn) {
                 if (part instanceof Marker) {
-                    chunks.push(replacement.get(part.n) ?? "");
+                    out.push(part);
+                    continue;
+                }
+                const s = part;
+                let i = 0;
+                const L = pattern.length;
+                while (true) {
+                    const j = s.indexOf(pattern, i);
+                    if (j === -1) {
+                        out.push(s.slice(i));
+                        break;
+                    }
+                    out.push(s.slice(i, j)); // prefix
+                    out.push(new Marker(num)); // marker
+                    i = j + L; // continue after match
+                }
+            }
+
+            //         // merge adjacent strings for cleanliness
+            const merged: Part[] = [];
+            for (const item of out) {
+                if (merged.length && typeof merged[merged.length - 1] === "string" && typeof item === "string") {
+                    merged[merged.length - 1] = (merged[merged.length - 1] as string) + item;
                 } else {
-                    chunks.push(part);
+                    merged.push(item);
                 }
             }
-            return chunks.join("");
+            return merged;
         };
 
-        const eq: BuiltIn = (t: TRAC): string => {
-            // #(eq,A,B,T,F) -> T if A==B else F (missing args -> "")
-            const A = t._arg(0);
-            const B = t._arg(1);
-            const T = t._arg(2);
-            const F = t._arg(3);
-            return A === B ? T : F;
-        };
-
-        // Arithmetic built-ins using BigInt to match Python's arbitrary precision
-        const ml: BuiltIn = (t: TRAC): string => {
-            const a = t._bigintArg(0);
-            const b = t._bigintArg(1);
-            return (a * b).toString();
-        };
-
-        const ad: BuiltIn = (t: TRAC): string => {
-            const a = t._bigintArg(0);
-            const b = t._bigintArg(1);
-            return (a + b).toString();
-        };
-
-        const su: BuiltIn = (t: TRAC): string => {
-            const a = t._bigintArg(0);
-            const b = t._bigintArg(1);
-            return (a - b).toString();
-        };
-
-        const ln: BuiltIn = (t: TRAC): string => {
-            /**
-             * #(ln,S) -> return all form names, separated by S.
-             */
-            const sep = t._arg(0);
-            const names = Object.keys(t.forms);
-            return names.join(sep);
-        };
-
-        const dd: BuiltIn = (t: TRAC): string => {
-            /**
-             * #(dd,N1,N2,...) -> delete the forms N1, N2, ...
-             * Returns null string.
-             */
-            for (let i = 0; i < t.args.length; i++) {
-                const name = t._arg(i);
-                if (name in t.forms) {
-                    delete t.forms[name];
-                }
+        // NOTE: this.args currently contains only parameters after the function name,
+        // so for ss: this.args = [N, P1, P2, ...]
+        // Markers are numbered by the ordinal position of Pi (1-based).
+        this.args.slice(1).forEach((pattern, idx) => {
+            if (pattern !== "") {
+                parts = replace_pattern_in_parts(parts, pattern, idx + 1);
             }
-            return "";
-        };
-
-        const ps: BuiltIn = (t: TRAC): string => {
-            /**
-             * #(ps,X) -> print the string X to output (stdout here).
-             * Returns null string.
-             */
-            const x = t._arg(0);
-            if (x !== undefined && x !== null) {
-                process.stdout.write(String(x));
-            }
-            return "";
-        };
-
-        Object.assign(this.builtins, {
-            ds,
-            ss,
-            cl,
-            eq,
-            ml,
-            su,
-            ad,
-            ln,
-            dd,
-            ps,
         });
+
+        this.forms[name] = parts;
+        return "";
     }
+
+    private async cl() {
+        /**
+         * #(cl,N,A1,A2,...) -> return the body of form N with markers filled:
+         * all #1 -> A1, #2 -> A2, ... (missing -> "", excess ignored)
+         */
+        const name = this._arg(0);
+        if (!(name in this.forms)) return "";
+        const parts = this.forms[name];
+
+        // Build replacement map 1->A1, 2->A2, ...
+        const replacement = new Map<number, string>();
+        for (let i = 0; i < this.args.length; i++) {
+            // this.args[0] is N
+            const ai = this.args[i + 1] ?? "";
+            replacement.set(i + 1, ai);
+        }
+
+        const chunks: string[] = [];
+        for (const part of parts) {
+            if (part instanceof Marker) {
+                chunks.push(replacement.get(part.n) ?? "");
+            } else {
+                chunks.push(part);
+            }
+        }
+        return chunks.join("");
+    }
+
+    private async eq() {
+        // #(eq,A,B,T,F) -> T if A==B else F (missing args -> "")
+        const A = this._arg(0);
+        const B = this._arg(1);
+        const T = this._arg(2);
+        const F = this._arg(3);
+        return A === B ? T : F;
+    }
+
+    // // Arithmetic built-ins using BigInt to match Python's arbitrary precision
+    private async ml() {
+        const a = this._bigintArg(0);
+        const b = this._bigintArg(1);
+        return (a * b).toString();
+    }
+
+    private async ad() {
+        const a = this._bigintArg(0);
+        const b = this._bigintArg(1);
+        return (a + b).toString();
+    }
+
+    private async su() {
+        const a = this._bigintArg(0);
+        const b = this._bigintArg(1);
+        return (a - b).toString();
+    }
+
+    private async ln() {
+        /**
+         * #(ln,S) -> return all form names, separated by S.
+         */
+        const sep = this._arg(0);
+        const names = Object.keys(this.forms);
+        console.log(`Listing forms: ${names.join(sep)}`);
+        return names.join(sep);
+    }
+
+    private async dd() {
+        /**
+         * #(dd,N1,N2,...) -> delete the forms N1, N2, ...
+         * Returns null string.
+         */
+        for (let i = 0; i < this.args.length; i++) {
+            const name = this._arg(i);
+            if (name in this.forms) {
+                delete this.forms[name];
+            }
+        }
+        return "";
+    }
+
+    private async ps() {
+        const x = this._arg(0);
+        if (x !== undefined && x !== null) {
+            this.output(String(x));
+        }
+        return "";
+    }
+
+    private async rc() {
+        // in non-interactive mode, return undefined if no input left
+        if (!this.interactive && this.input.length === 0) return undefined;
+
+        while (this.input.length === 0) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        return this.input.shift() || "";
+    }
+
+    private async rs() {
+        let result = "";
+
+        while (true) {
+            const ch = await this.rc();
+            if (ch === undefined) break; // end of input in non-interactive mode
+            if (ch === this.meta) break;
+            result += ch;
+        }
+        return result;
+    }
+
+    //     rs,
+    //     rc,
+    //     //
+    //     ps,
+    //     // cm
+    //     ds,
+    //     ss,
+    //     cl,
+    //     // cs
+    //     // cc
+    //     // cn
+    //     // in
+    //     // cr
+    //     dd,
+    //     // da
+    //     ad,
+    //     su,
+    //     ml,
+    //     // dv
+    //     // bu
+    //     // bi
+    //     // bc
+    //     // bs
+    //     // br
+    //     eq,
+    //     // gr
+    //     // sb
+    //     // fb
+    //     // eb
+    //     ln,
+    //     // pf
+    //     // tn
+    //     // tf
+    private async qm() {
+        // query meta character
+        return this.meta;
+    }
+
+    private async sl() {
+        // string length
+        const arg = this._arg(0);
+        return `${arg.length}`;
+    }
+
+    private async cd() {
+        // character to decimal
+        const arg = this._arg(0);
+        if (arg.length === 0) return "0";
+        return `${arg.codePointAt(0) ?? 0}`;
+    }
+
+    private async dc() {
+        // decimal to character
+        const n = this._bigintArg(0);
+        if (n < 0n || n > 0x10ffffn) return "";
+        return String.fromCodePoint(Number(n));
+    }
+
+    //     // sr
+
+    private async cr() {
+        // change radix of V from R1 to R2, where V can be represented
+        // by 0, 1, ..., 9, A, B, ..., Z.
+        // radixes are from 1 to Z
+        // (for example, 1 for binary, 9 for decimal, F for hexadecimal, Z for base 36)
+        const V = this._arg(2).toUpperCase();
+        const R1s = this._arg(0).toUpperCase();
+        const R2s = this._arg(1).toUpperCase();
+
+        const RADIXES = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        const R1 = RADIXES.indexOf(R1s) + 1;
+        const R2 = RADIXES.indexOf(R2s) + 1;
+        // console.log(`Convert ${V} from base ${R1} to base ${R2}`);
+        if (R1 < 1 || R1 > 36 || R2 < 1 || R2 > 36) return "";
+
+        // Convert V from base R1 to an integer
+        let intValue = 0n;
+        for (let i = 0; i < V.length; i++) {
+            const digit = RADIXES.indexOf(V[i]);
+            if (digit < 0 || digit >= R1) return ""; // invalid digit for base R1
+            intValue = intValue * BigInt(R1) + BigInt(digit);
+        }
+
+        // Special case for zero
+        if (intValue === 0n) return "0";
+
+        // Convert integer to base R2
+        let result = "";
+        while (intValue > 0n) {
+            const remainder = Number(intValue % BigInt(R2));
+            result = RADIXES[remainder] + result;
+            intValue = intValue / BigInt(R2);
+        }
+        return result;
+    }
+    //     // cr
+    //     // hl
+    private async hl() {
+        process.exit(0);
+    }
+    //     // ai
+    //     // ao
+    //     // sp
+    //     // rp
+    //     // rs 2
 
     private _arg(i: number): string {
         return i < this.args.length ? this.args[i] : "";
@@ -436,67 +549,42 @@ export class TRAC {
     }
 }
 
-// --- sample usage & assertions (mirroring the Python __main__) ---
+if (import.meta.main) {
+    if (process.argv.length < 3) {
+        console.log("TRAC interpreter (CTRL-C or #(hl)' to exit)");
+        process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.setEncoding("utf8");
 
-if (require.main === module) {
-    const trac = new TRAC();
+        const input: string[] = [];
 
-    const fact = "#(ds,Factorial,(#(eq,X,1,1,(#(ml,X,#(cl,Factorial,#(su,X,1)))))))'";
-    let v = trac.execute(fact);
-    console.assert(v === "", `v=${v}`);
+        process.stdin.on("data", (key: string) => {
+            if (key === "\u0003") process.exit();
+            if (key === "\r") key = "\n";
+            process.stdout.write(key);
+            input.push(key);
+        });
 
-    const fact_ss = "#(ss,Factorial,X)'";
-    v = trac.execute(fact_ss);
-    console.assert(v === "", `v=${v}`);
+        function output(v: string) {
+            process.stdout.write(v);
+        }
 
-    const fact_5 = "#(cl,Factorial,5)'";
-    v = trac.execute(fact_5);
-    console.log(v);
-    console.assert(v === "120", `v=${v}`);
+        const trac = new TRAC("#(ps,] )#(ps,#(rs))", input, output, true);
+        const v = await trac.run();
+        console.log(`=> ${v}`);
+    } else {
+        const program = process.argv[2];
+        console.log(`program: [${program}]`);
+        const input = process.argv[3] || "";
+        console.log(`input: [${input}]`);
 
-    const fact_50 = "#(cl,Factorial,50)'";
-    v = trac.execute(fact_50);
-    console.log(v);
-    console.assert(v === "30414093201713378043612608166064768844377641568960512000000000000", `v=${v}`);
+        const trac = new TRAC(program, input, output);
+        const v = await trac.run();
+        console.log();
+        console.log(`=> ${v}`);
 
-    const trivia = "((3+4))*9 = #(ml,#(ad,3,4),9)'";
-    v = trac.execute(trivia);
-    console.log(v);
-    console.assert(v === "(3+4)*9 = 63", `v=${v}`);
-
-    const fact_ = `
-    #(cl,Factorial,5
-    #(ds,Factorial,(
-    #(eq,X,1,
-    1,
-    (#(ml,X,#(cl,Factorial,#(su,X,1)))))))
-    #(ss,Factorial,X))'
-  `;
-    v = trac.execute(fact_.trim()).trim();
-    console.log(v);
-    console.assert(v === "120", `v=${v}`);
-
-    v = trac.execute("#(ps,#(ln,(,)))'");
-    console.log(v);
-    console.assert(v === "", `v=${v}`);
-
-    v = trac.execute("#(ds,AA,Cat)'");
-    console.log(v);
-    console.assert(v === "", `v=${v}`);
-
-    v = trac.execute("#(ds,BB,(#(cl,AA)))'");
-    console.log(v);
-    console.assert(v === "", `v=${v}`);
-
-    v = trac.execute("#(ps,(#(cl,bb)))'");
-    console.log(v);
-    console.assert(v === "", `v=${v}`);
-
-    v = trac.execute("#(ps,##(cl,BB))'");
-    console.log(v);
-    console.assert(v === "", `v=${v}`);
-
-    v = trac.execute("#(ps,#(cl,BB))'");
-    console.log(v);
-    console.assert(v === "", `v=${v}`);
+        function output(v: string) {
+            process.stdout.write(v);
+        }
+    }
 }
