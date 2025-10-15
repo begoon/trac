@@ -1,0 +1,1 @@
+#(ds,Factorial,(#(eq,X,1,1,(#(ml,X,#(cl,Factorial,#(su,X,1)))))))'#(ss,Factorial,X)'#(cl,Factorial,50)'
