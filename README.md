@@ -6,6 +6,8 @@ The repository contains a TRAC interpreter described in the book [Etudes for Pro
 
 The interpreter is written in JavaScript and implements what is called the original TRAC-64 definition of the languages.
 
+To run the interpreter, you need either `node` (24+), `bun` or `deno`.
+
 The interpreter also implements additional functions and an ability to call forms as functions by name, suggested by Charles Wetherell as an extension of the etude.
 
 All functions are covered unit tests.
@@ -14,35 +16,49 @@ NOTE: However, there are a few unimplemented functions: external stream I/O (`ai
 
 ## Examples
 
-### calculate "e" constant
+### "e" constant
 
 ```sh
 node trac.ts examples/e.trac
+
+2.7182818277
 ```
 
-### Calculate "pi"
+### "pi" constant
 
 ```sh
 node trac.ts examples/pi.trac
+
+3.1415926538
 ```
 
-### Calculate factorial (of `50!`)
+### factorial
 
 ```sh
 node trac.ts examples/factorial.trac
+
+30414093201713378043612608166064768844377641568960512000000000000
 ```
 
-### Solve Hanoi puzze recursively
+### Hanoi puzze solever
 
 ```sh
 node trac.ts examples/hanoi.trac
+
+from 1 to 3
+from 1 to 2
+from 3 to 2
+from 1 to 3
+from 2 to 1
+from 2 to 3
+from 1 to 3
 ```
 
 ## Testing
 
 ### Prerequisites
 
-- bun.sh
+- [Bun](https://bun.sh/)
 
 ### Run tests
 
