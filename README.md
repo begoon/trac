@@ -54,6 +54,28 @@ from 2 to 3
 from 1 to 3
 ```
 
+### Run code directly
+
+It is possible to run TRAC programs directly from the command line by prefixing command line arguments with `@`.
+
+```sh
+node trac.ts "@#(ps,I am TRAC)'"
+
+I am TRAC
+```
+
+### Interactive mode
+
+```sh
+node trac.ts
+
+TRAC interpreter (CTRL-C or #(hl)' to exit)
+
+TRAC>
+```
+
+Then you can type TRAC code interactively.
+
 ## Testing
 
 ### Prerequisites
