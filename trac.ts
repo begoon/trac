@@ -893,7 +893,6 @@ export class TRAC {
         // #(cr,R1,R2,V)  -> Change radix (existing)
 
         if (this.args.length === 1) {
-            // --- Call Restore ---
             const name = this._arg(0);
             if (name in this.forms) {
                 this._ensurePointer(name);
@@ -963,7 +962,7 @@ export class TRAC {
         try {
             return BigInt(norm);
         } catch {
-            // Fallback if not a valid integer string.
+            // fallback if not a valid integer string
             return 0n;
         }
     }
