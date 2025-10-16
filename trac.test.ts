@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import fs from "node:fs";
 import { TRAC } from "./trac.ts";
 
 const multiline = `
@@ -11,48 +12,50 @@ const multiline = `
   `;
 
 const cases = [
+    // trivia
     ["abc'xyz", "abc"],
+    // ps
     ["#(ps,(ABC))'", "ABC"],
     ["#(ps,ABC)'x", "ABC"],
     ["#(ps,] )#(ps,#(rs))'XYZ'", "] XYZ"],
+    //
     ["((3+4))*9 = #(ml,#(ad,3,4),9)'", "(3+4)*9 = 63"],
-    [
-        [
-            "#(ds,Factorial,(#(eq,X,1,1,(#(ml,X,#(cl,Factorial,#(su,X,1)))))))'",
-            "#(ss,Factorial,X)'",
-            "#(cl,Factorial,50)'",
-        ].join(""),
-        "30414093201713378043612608166064768844377641568960512000000000000",
-    ],
+    // cl, ln
     [multiline + "#(ps,#(ln,(,)))'", "            120Factorial  "],
     ["#(ds,AA,Cat)'#(ds,BB,(#(cl,AA)))'#(ps,##(ln,(,)))'", "AA,BB"],
     ["#(ps,(#(cl,bb)))'", "#(cl,bb)"],
     ["#(ps,##(cl,BB))'", ""],
     ["#(ps,#(cl,BB))'", ""],
+    //
     ["##(qm)'", "'"],
+    ["#(cm,`)'#(qm)`", "`"],
+    //
     ["##(sl,12345)'", "5"],
+    //
     ["##(cd,X)'", "88"],
     ["##(dc,111)'", "o"],
+    //
     ["##(cr,F,9,3FFF)'", "16383"],
     ["##(cr,9,F,1025)'", "401"],
     ["#(ps,##(cr,9,F,1025))'", "401"],
-    ["#(cm,`)'#(qm)`", "`"],
+    //
     ["#(ad,123,456)'", "579"],
     ["#(su,123,456)'", "-333"],
     ["#(ml,123,456)'", "56088"],
     ["#(dv,1234567,456)'", "2707"],
+    //
     ["#(eq,123,123,T,F)'", "T"],
     ["#(eq,123,456,T,F)'", "F"],
-    ["#(gr,123,123,T,F)'", "F"],
-    ["#(gr,456,123,T,F)'", "T"],
+    //
+    ["#(gr,123,000123,T,F)'", "F"],
+    ["#(gr,456,000123,T,F)'", "T"],
     ["#(gr,123,456,T,F)'", "F"],
     //
     ["#(ds,AA,aa)'#(ds,BB,bb)'#(ps,##(ln,(,)))'#(da)'#(ps,##(ln,(,)))'", "AA,BB"],
     ["#(ds,AA,aa)'#(ds,BB,bb)'#(ps,##(ln,(,)))'#(dd,BB)'#(ps,##(ln,(,)))'", "AA,BBAA"],
 ];
 
-// --- cs ------------------------------------------------------------
-// form: ab X cd Y ef (X and Y become segment markers)
+// cs: form [ab X cd Y ef] (X and Y become segment markers)
 cases.push([
     [
         "#(ds,F,abXcdYef)'",
@@ -62,13 +65,12 @@ cases.push([
         "#(ps,#(cs,F,(?)))'", // -> "ab"
         "#(ps,#(cs,F,(!)))'", // -> "cd"
         "#(ps,#(cs,F,($)))'", // -> "ef"
-        "##(cs,F,#(ps,ZZ))'", // end; Z returned in ACTIVE mode -> prints "ZZ"
+        "##(cs,F,#(ps,ZZ))'", // end, Z returned in ACTIVE mode -> prints "ZZ"
     ].join(""),
     "ab<111>cd<222>ef|abcdefZZ",
 ]);
 
-// --- cc ------------------------------------------------------------
-// Form: a X b Y c
+// cc: form [a X b Y c] (X and Y become segment markers)
 cases.push([
     [
         "#(ds,G,aXbYc)'",
@@ -78,13 +80,13 @@ cases.push([
         "#(ps,#(cc,G,END))'", // -> "a"
         "#(ps,#(cc,G,END))'", // -> "b"
         "#(ps,#(cc,G,END))'", // -> "c"
-        "##(cc,G,END)'", // end; Z returned in ACTIVE mode -> prints "END"
+        "##(cc,G,END)'", // end, Z returned in ACTIVE mode -> prints "END"
     ].join(""),
     "a<x>b<y>c|abcEND",
 ]);
 
-// --- cn (positive, then overflow to the right) ---------------------
-// Form: ab X cd Y ef
+// cn (positive, then overflow to the right)
+// form: [ab X cd Y ef]
 cases.push([
     [
         "#(ds,H,abXcdYef)'",
@@ -96,8 +98,8 @@ cases.push([
     "abcdeZZ",
 ]);
 
-// --- cn (negative, then overflow to the left) ----------------------
-// Form: ab X cd Y ef
+// cn (negative, then overflow to the left)
+// form: [ab X cd Y ef]
 cases.push([
     [
         "#(ds,J,abXcdYef)'",
@@ -109,9 +111,7 @@ cases.push([
     "abcdbcdZZ",
 ]);
 
-// -------------------------------------------------------------------
-
-// --- in: basic match; value is pre-match, pointer advances to end of match
+// in: basic match -- value is pre-match, pointer advances to end of match
 cases.push([
     [
         "#(ds,F,abXcdYef)'",
@@ -121,7 +121,7 @@ cases.push([
     "ab",
 ]);
 
-// --- in: no match because the candidate would cross a marker; Z returned in ACTIVE mode
+// in: no match because the candidate would cross a marker, Z returned in ACTIVE mode
 cases.push([
     [
         "#(ds,F,abXcdYef)'",
@@ -131,7 +131,7 @@ cases.push([
     "NOMATCH",
 ]);
 
-// --- in: match later; returned value drops markers; pointer moves to end of match
+// in: match later -- returned value drops markers, pointer moves to end of match
 cases.push([
     [
         "#(ds,F,abXcdYef)'",
@@ -141,7 +141,7 @@ cases.push([
     "abcd",
 ]);
 
-// --- in: empty X matches immediately and returns empty; pointer unchanged
+// in: empty X matches immediately and returns empty, pointer unchanged
 cases.push([
     [
         "#(ds,F,abXcd)'",
@@ -152,7 +152,7 @@ cases.push([
     "a",
 ]);
 
-// --- in: demonstrate pointer stationary on no-match, by attempting a character read after
+// in: testing pointer stationary on no-match, by attempting a character read after
 cases.push([
     [
         "#(ds,F,abXcd)'",
@@ -163,8 +163,7 @@ cases.push([
     "NOa",
 ]);
 
-// -------------------------------------------------------------------
-// --- Call Restore basic: read one char, restore, read again -> same first char twice
+// cr: call restore, basic: read one char, restore, read again -> same first char twice
 cases.push([
     [
         "#(ds,F,abXcd)'",
@@ -176,8 +175,8 @@ cases.push([
     "aa",
 ]);
 
-// --- Call Restore is null-valued (no output)
-// The neutral call produces no characters; then a read shows pointer back at start
+// cr: call restore is null-valued (no output)
+// the neutral call produces no characters, then a read shows pointer back at start
 cases.push([
     [
         "#(ds,G,HelloYWorld)'",
@@ -189,15 +188,13 @@ cases.push([
     "HH",
 ]);
 
-// --- Call Restore on form not present: still null-valued, no crash, no output
+// cr: call restore on form not present: still null-valued, no crash, no output
 cases.push(["##(cr,NoSuchForm)'", ""]);
 
-// -------------------------------------------------------------------
-// --- pf: initial pointer at start ---
-
+// pf: initial pointer at start
 cases.push([["#(ds,F,abXcdYef)'", "#(ss,F,X,Y)'", "#(pf,F)'"].join(""), "<↑>ab<1>cd<2>ef"]);
 
-// --- pf: pointer after consuming 3 characters (ignoring markers) ---
+// pf: pointer after consuming 3 characters (ignoring markers)
 cases.push([
     [
         "#(ds,F,abXcdYef)'",
@@ -209,7 +206,7 @@ cases.push([
     "abc|ab<1>c<↑>d<2>ef",
 ]);
 
-// --- pf: pointer at end of form ---
+// pf: pointer at end of form
 cases.push([
     [
         "#(ds,F,abXcdYef)'",
@@ -221,8 +218,26 @@ cases.push([
     "abcdef|ab<1>cd<2>ef<↑>",
 ]);
 
-// -------------------------------------------------------------------
-// Boolean suffix examples (from spec notes in the scan):
+// sr: no form → 0
+cases.push(["#(ps,##(sr,NoSuch))'", "0"]);
+
+// sr: has markers 1 & 2 (no gaps) → 0
+cases.push([["#(ds,H,aXbYc)'", "#(ss,H,X,Y)'", "#(ps,##(sr,H))'"].join(""), "0"]);
+
+// sr: has a gap (markers 1 and 3 present; 2 missing) → returns highest = 3
+cases.push([
+    [
+        "#(ds,G,aXbZc)'",
+        "#(ss,G,X,,Z)'", // empty second pattern -> no #2, but #3 exists
+        "#(ps,##(sr,G))'",
+    ].join(""),
+    "3",
+]);
+
+// sr: no markers at all → 0
+cases.push([["#(ds,F,abcdef)'", "#(ps,##(sr,F))'"].join(""), "0"]);
+
+// boolean suffix examples:
 // abc0100 -> 0100, 1234567890 -> 0, 43210 -> 10, abc -> ""
 
 // bu — union (left-pad shorter with zeros)
@@ -249,26 +264,50 @@ cases.push(["#(ps,##(br,-2,abc0100))'", "0001"]); // 0100 rotR 2 = 0001
 cases.push(["#(ps,##(br,3,1011))'", "1101"]); // 1011 rotL 3 ≡ rotL 1 = 1101
 cases.push(["#(ps,##(br,-7,1011))'", "0111"]); // 0111 rotR 7 ≡ rotR 3 = 1101
 
-// -------------------------------------------------------------------
-// --- direct form call behaves like cl ---
-cases.push([["#(ds,Greet,(Hello(,) #1))'", "#(ss,Greet,#1)'", "#(ps,#(Greet,Alex))'"].join(""), "Hello, Alex"]);
+// call forms as functions, so #(abc,...) is like #(cl,abc,...)
+cases.push([["#(ds,Greet,(hello(,) #1))'", "#(ss,Greet,#1)'", "#(ps,#(Greet,ABC))'"].join(""), "hello, ABC"]);
+cases.push([["#(ds,Join,(#1-#2))'", "#(ss,Join,#1,#2)'", "#(ps,#(Join,ABC,XYZ))'"].join(""), "ABC-XYZ"]);
 
-// --- overlay a builtin: define a form named 'eq' and ensure the form is called (forms before builtins) ---
-cases.push([
-    [
-        "#(ds,eq,FORM)'", // define a form with name 'eq'
-        "#(ps,#(eq))'", // should call the form, not the builtin
-    ].join(""),
-    "FORM",
-]);
+// overlay a builtin
+cases.push([["#(ds,eq,CUSTOM/EQ)'", "#(ps,#(eq))'"].join(""), "CUSTOM/EQ"]);
 
-// --- direct form call with multiple arguments and markers ---
-cases.push([["#(ds,Join,(#1-#2))'", "#(ss,Join,#1,#2)'", "#(ps,#(Join,HELLO,WORLD))'"].join(""), "HELLO-WORLD"]);
-
-// ---------------------------
+// external storage forms (sb, fb, eb) - unimplemented
 cases.push(["#(sb, A, F1, F2)'", "N/A"], ["#(fb, A)'", "N/A"], ["#(eb, A)'", "N/A"]);
 
-// --- Run tests -------------------------------------------------------
+// external I/O forms (ai, ao, sp, rp) - unimplemented
+cases.push(["#(ai)'", "N/A"], ["#(ao, XYZ)'", "N/A"], ["#(sp, ABC)'", "N/A"], ["#(rp)'", "N/A"]);
+
+// tn/tf - tracing
+cases.push(["#(tn)#(ps,123)#(tf)'", [`CALL "ps" [123]`, `123`, `CALL "tf" []`].join("\n") + "\n"]);
+cases.push(["#(tf)'", ""]);
+
+// "e" constant calculation
+cases.push([file("e.trac"), "2.7182818277"]);
+
+// "pi" constant calculation
+cases.push([file("pi.trac"), "3.1415926538"]);
+
+// factorial (50!)
+cases.push([file("factorial.trac"), "30414093201713378043612608166064768844377641568960512000000000000"]);
+
+// hanoi
+const hanoi_solution = [
+    "from 1 to 3",
+    "from 1 to 2",
+    "from 3 to 2",
+    "from 1 to 3",
+    "from 2 to 1",
+    "from 2 to 3",
+    "from 1 to 3",
+];
+cases.push([file("hanoi.trac"), hanoi_solution.join("\n") + "\n"]);
+
+//
+
+function file(name: string) {
+    return fs.readFileSync("examples/" + name, "utf-8");
+}
+
 test.each(cases)("[%s] -> [%s]", async (input, output) => {
     let out: string = "";
     const trac = new TRAC(input, (v) => (out += v));

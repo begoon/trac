@@ -1,0 +1,19 @@
+This is an implementation of the macro-processing language TRAC.
+
+The file `trac' is written in Perl, and implements a TRAC interpreter.
+You need to fetch a reasonably recent version of Perl (I used 4.0.36)
+if you don't have one already.
+
+The file `trac.doc' is an ASCII file (not a man page) which describes the
+language tersely but completely, explaining both the traditional
+implementation and the Perl one.
+
+The files `trac.1' and `Makefile' are there for the benefit of anal-retentives.
+The only `make' option is `make dist', which regenerates a shar file.
+
+The file `hanoi.trac' implements the Towers of Hanoi.  Commentary on it
+can be found in `trac.doc'.  To run it from the `trac' interpreter, type:
+
+	#(ld,hanoi.trac)
+	#(cl,hanoi,1,2,3)
+	'

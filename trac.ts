@@ -1,3 +1,5 @@
+import fs from "node:fs";
+
 type Part = string | Marker; // a chunk of literal text or a numbered marker
 
 class Halt extends Error {}
@@ -37,8 +39,9 @@ export class TRAC {
     frames: Frame[] = [];
     args: string[] = [];
 
-    initial: string; // initial program to run
+    initial: string; // initial program to run: "#(ps,#(rs))" by default
 
+    // interpreter I/O
     input: string[] = []; // input stream for rs/rc
     output: (v: string) => void;
 
@@ -46,9 +49,12 @@ export class TRAC {
 
     meta: string = "'";
 
+    tracing: boolean = false;
+    newline: boolean = true; // whether the last output ended with a newline
+
     private _skip_chars = new Set<string>(["\t", "\n", "\r", "'"]);
 
-    formPtr: Record<string, number> = {}; // per-form pointers (character index, ignoring markers)
+    formPointers: Record<string, number> = {}; // per-form pointers (character index, ignoring markers)
     private _forceActiveInsert: string | null = null; // request to force-active deliver a value from a builtin
 
     constructor(
@@ -60,6 +66,7 @@ export class TRAC {
         this.input = Array.isArray(input) ? input : Array.from(input);
         this.output = output;
         this.interactive = interactive;
+        this.tracing = false;
     }
 
     async run() {
@@ -137,22 +144,17 @@ export class TRAC {
         return this.neutral.join("");
     }
 
-    // --- internals ---
-
-    private _reset_processor(program: string) {
-        this.neutral.length = 0;
-        this.active = Array.from(program);
-        this.scan = 0;
-        this.frames.length = 0;
-        this.args = [];
-    }
-
     private _clear_processor() {
         this.neutral.length = 0;
         this.active.length = 0;
         this.scan = 0;
         this.frames.length = 0;
         this.args = [];
+    }
+
+    private _reset_processor(program: string) {
+        this._clear_processor();
+        this.active = Array.from(program);
     }
 
     private _delete_active_char() {
@@ -163,7 +165,7 @@ export class TRAC {
 
     private _move_active_char_to_neutral() {
         this.neutral.push(this.active[this.scan]);
-        this._delete_active_char(); // scan stays
+        this._delete_active_char();
     }
 
     private _peek(...expect: string[]): boolean {
@@ -197,7 +199,7 @@ export class TRAC {
                 this.neutral.push(ch);
                 this.active.splice(i, 1);
             }
-            // note: i doesn't increment because we remove from active
+            // note: "i" doesn't increment because we remove from active
         }
         return false;
     }
@@ -240,11 +242,27 @@ export class TRAC {
         this.args = args.slice(1);
         let value = "";
 
-        // 1) If a form with this name exists, treat it as #(cl,name, A1, A2, ...)
+        if (this.tracing) {
+            if (!this.newline) this.output("\n");
+            const printable = (s: string) => s.replace(/\n/g, "<10>").replace(/\r/g, "<13>").replace(/\t/g, "<09>");
+            this.output(`CALL "${name}" [${this.args.map((v) => printable(v))}]\n`);
+            this.newline = true;
+            if (this.interactive) {
+                this.output("continue? (Y/n) ");
+                const yn = await this.rc();
+                if (yn !== "\n" && yn !== "\r") this.output("\n");
+                if (yn != null && yn.toLowerCase().startsWith("n")) {
+                    this._reset_processor(this.initial);
+                    return;
+                }
+            }
+        }
+
+        // 1. if a form with this name exists, treat it as #(cl,name, A1, A2, ...)
         if (Object.prototype.hasOwnProperty.call(this.forms, name)) {
             const parts = this.forms[name];
 
-            // Build replacement map: 1 -> A1, 2 -> A2, ...
+            // build replacement map: 1 -> A1, 2 -> A2, ...
             const replacement = new Map<number, string>();
             for (let i = 0; i < this.args.length; i++) {
                 replacement.set(i + 1, this.args[i] ?? "");
@@ -259,13 +277,11 @@ export class TRAC {
                 }
             }
             value = chunks.join("");
-
-            // 2) Else fall back to a builtin of that name (if any)
-        } else if (this[name] && typeof this[name] === "function") {
-            value = await (this as any)[name]();
-
-            // 3) Otherwise, undefined form/function -> null string by convention
+        } else if (hasFunction(this, name)) {
+            // 2. else fall back to a builtin of that name (if any)
+            value = await this[name]();
         } else {
+            // 3. otherwise, undefined form/function -> null string by convention
             value = "";
         }
 
@@ -281,133 +297,121 @@ export class TRAC {
 
         if (frame.mode === "neutral") {
             this.neutral.push(...Array.from(value));
-            // console.log(`Neutral function ${name} -> [${value}]`);
-            // console.log(`Neutral now: [${this.neutral.join("")}]`);
         } else {
             this.active = Array.from(value).concat(this.active.slice(this.scan));
-            // console.log(`Active function ${name} -> [${value}]`);
-            // console.log(`Active now: [${this.active.join("")}]`);
             this.scan = 0;
         }
 
         this.args = [];
     }
 
-    private _ensurePtr(name: string) {
-        if (!(name in this.formPtr)) this.formPtr[name] = 0;
+    private _ensurePointer(name: string) {
+        if (!(name in this.formPointers)) this.formPointers[name] = 0;
     }
 
-    private _formTotalLen(name: string): number {
+    private _formLength(name: string): number {
         if (!(name in this.forms)) return 0;
-        let L = 0;
+        let v = 0;
         for (const part of this.forms[name]) {
-            if (typeof part === "string") L += part.length;
+            if (typeof part === "string") v += part.length;
         }
-        return L;
+        return v;
     }
 
     private _formSlice(name: string, start: number, end: number): string {
         // Slice [start, end) by counting only literal characters, skipping Markers
         if (!(name in this.forms)) return "";
+
         if (start < 0) start = 0;
-        const total = this._formTotalLen(name);
-        if (end > total) end = total;
+        const formLength = this._formLength(name);
+        if (end > formLength) end = formLength;
         if (start >= end) return "";
 
-        let out = "";
-        let pos = 0; // character index among literal chars
+        let v = "";
+        let i = 0; // character index among literal chars
         for (const part of this.forms[name]) {
             if (part instanceof Marker) continue;
-            const s = part;
-            const nextPos = pos + s.length;
-            // overlap of [pos, nextPos) with [start, end)
-            const a = Math.max(start, pos);
-            const b = Math.min(end, nextPos);
-            if (b > a) out += s.slice(a - pos, b - pos);
-            pos = nextPos;
-            if (pos >= end) break;
+            const advance = i + part.length;
+            // overlap of [i, advance) with [start, end)
+            const a = Math.max(start, i);
+            const b = Math.min(end, advance);
+            if (b > a) v += part.slice(a - i, b - i);
+            i = advance;
+            if (i >= end) break;
         }
-        return out;
+        return v;
     }
 
     private _markerBoundaries(name: string): number[] {
         // Return the list of character positions (ignoring markers) where a Marker sits,
         // i.e., boundary immediately to the *right* of the characters encountered so far.
-        // Also append the end-of-body as a boundary (per spec for cs).
+        // Also append the end-of-body as a boundary.
         const bounds: number[] = [];
         if (!(name in this.forms)) return [0];
 
-        let pos = 0;
+        let i = 0;
         for (const part of this.forms[name]) {
             if (part instanceof Marker) {
-                bounds.push(pos);
+                bounds.push(i);
             } else {
-                pos += part.length;
+                i += part.length;
             }
         }
-        bounds.push(pos); // end of body counts as a boundary
+        bounds.push(i); // end of body counts as a boundary
         return bounds;
     }
 
     private async ds() {
-        // #(ds,N,B) -> define/replace form N with body B.
-        // store as a list<Part> with a single literal chunk initially.
         const name = this._arg(0);
         const body = this._arg(1);
         if (!name) return "";
         this.forms[name] = [body]; // literal body, no markers yet
-        this.formPtr[name] = 0; // reset pointer when (re)defining a form
+        this.formPointers[name] = 0; // reset pointer when (re)defining a form
         return "";
     }
 
     private async ss() {
-        /**
-         * #(ss,N,P1,P2,...) -> create ordinal segment markers in form N.
-         * Each non-null Pi is searched L->R and each occurrence (that does not cross
-         * an existing marker) is replaced by Marker(i).
-         */
         const name = this._arg(0);
         if (!(name in this.forms)) return "";
-        let parts = this.forms[name]; // list<Part>
+        let parts = this.forms[name];
 
-        const replace_pattern_in_parts = (partsIn: Part[], pattern: string, num: number): Part[] => {
+        const replace_pattern_in_parts = (partsIn: Part[], pattern: string, index: number): Part[] => {
             if (pattern === "") return partsIn;
 
-            const out: Part[] = [];
+            const rebuilt: Part[] = [];
             for (const part of partsIn) {
                 if (part instanceof Marker) {
-                    out.push(part);
+                    rebuilt.push(part);
                     continue;
                 }
-                const s = part;
                 let i = 0;
-                const L = pattern.length;
+                const advance = pattern.length;
                 while (true) {
-                    const j = s.indexOf(pattern, i);
+                    const j = part.indexOf(pattern, i);
                     if (j === -1) {
-                        out.push(s.slice(i));
+                        rebuilt.push(part.slice(i));
                         break;
                     }
-                    out.push(s.slice(i, j)); // prefix
-                    out.push(new Marker(num)); // marker
-                    i = j + L; // continue after match
+                    rebuilt.push(part.slice(i, j)); // prefix
+                    rebuilt.push(new Marker(index)); // marker
+                    i = j + advance; // continue after match
                 }
             }
 
-            //         // merge adjacent strings for cleanliness
+            // merge adjacent strings for cleanliness
             const merged: Part[] = [];
-            for (const item of out) {
-                if (merged.length && typeof merged[merged.length - 1] === "string" && typeof item === "string") {
-                    merged[merged.length - 1] = (merged[merged.length - 1] as string) + item;
+            for (const part of rebuilt) {
+                if (merged.length && typeof merged[merged.length - 1] === "string" && typeof part === "string") {
+                    merged[merged.length - 1] = merged[merged.length - 1] + part;
                 } else {
-                    merged.push(item);
+                    merged.push(part);
                 }
             }
             return merged;
         };
 
         // NOTE: this.args currently contains only parameters after the function name,
-        // so for ss: this.args = [N, P1, P2, ...]
+        // so for ss: this.args = [N, P1, P2, ...].
         // Markers are numbered by the ordinal position of Pi (1-based).
         this.args.slice(1).forEach((pattern, idx) => {
             if (pattern !== "") {
@@ -420,15 +424,11 @@ export class TRAC {
     }
 
     private async cl() {
-        /**
-         * #(cl,N,A1,A2,...) -> return the body of form N with markers filled:
-         * all #1 -> A1, #2 -> A2, ... (missing -> "", excess ignored)
-         */
         const name = this._arg(0);
         if (!(name in this.forms)) return "";
         const parts = this.forms[name];
 
-        // Build replacement map 1->A1, 2->A2, ...
+        // build replacement map 1->A1, 2->A2, ...
         const replacement = new Map<number, string>();
         for (let i = 0; i < this.args.length; i++) {
             // this.args[0] is N
@@ -448,108 +448,102 @@ export class TRAC {
     }
 
     private async cs() {
-        // #(cs,N,Z)
         const name = this._arg(0);
         const Z = this._arg(1);
         if (!(name in this.forms)) return "";
 
-        this._ensurePtr(name);
-        const L = this._formTotalLen(name);
-        let p = this.formPtr[name];
+        this._ensurePointer(name);
+        const formLength = this._formLength(name);
+        let pointer = this.formPointers[name];
 
-        if (p >= L) {
+        if (pointer >= formLength) {
             // return Z in ACTIVE mode regardless of call mode
             this._forceActiveInsert = Z;
             return "";
         }
 
-        // next boundary strictly to the right of p; end-of-body counts as boundary
+        // next boundary strictly to the right of p, end-of-body counts as boundary
         const bounds = this._markerBoundaries(name);
-        let b = L;
+        let end = formLength;
         for (const x of bounds) {
-            if (x > p) {
-                b = x;
+            if (x > pointer) {
+                end = x;
                 break;
             }
         }
 
-        const val = this._formSlice(name, p, b);
-        this.formPtr[name] = b; // pointer left just before the char right of marker
-        return val;
+        const v = this._formSlice(name, pointer, end);
+        this.formPointers[name] = end; // pointer left just before the char right of marker
+        return v;
     }
 
     private async cc() {
-        // #(cc,N,Z)
         const name = this._arg(0);
         const Z = this._arg(1);
         if (!(name in this.forms)) return "";
 
-        this._ensurePtr(name);
-        const L = this._formTotalLen(name);
-        let p = this.formPtr[name];
+        this._ensurePointer(name);
+        const formLength = this._formLength(name);
+        let pointer = this.formPointers[name];
 
-        if (p >= L) {
+        if (pointer >= formLength) {
             this._forceActiveInsert = Z; // active-mode return
             return "";
         }
 
-        const val = this._formSlice(name, p, p + 1);
-        this.formPtr[name] = p + 1; // advance just beyond selected character
-        return val;
+        const v = this._formSlice(name, pointer, pointer + 1);
+        this.formPointers[name] = pointer + 1; // advance just beyond selected character
+        return v;
     }
 
     private async cn() {
-        // #(cn,N,D,Z) — four args incl. mnemonic => here we see three params
         const name = this._arg(0);
-        const Dbig = this._bigintArg(1);
+        const D_ = this._bigintArg(1);
         const Z = this._arg(2);
         if (!(name in this.forms)) return "";
 
-        const D = Number(Dbig); // D can be negative; we only use small ranges in practice
-        this._ensurePtr(name);
-        const L = this._formTotalLen(name);
-        let p = this.formPtr[name];
+        const D = Number(D_); // D can be negative; we only use small ranges in practice
+        this._ensurePointer(name);
+        const formLength = this._formLength(name);
+        let pointer = this.formPointers[name];
 
-        if (D === 0) {
-            return ""; // null string, pointer does not move
-        }
+        if (D === 0) return ""; // null string, pointer does not move
 
         if (D > 0) {
-            const end = p + D;
-            if (end > L) {
+            const end = pointer + D;
+            if (end > formLength) {
                 this._forceActiveInsert = Z; // would move off right end
                 return "";
             }
-            const val = this._formSlice(name, p, end);
-            this.formPtr[name] = end;
-            return val;
+            const v = this._formSlice(name, pointer, end);
+            this.formPointers[name] = end;
+            return v;
         } else {
-            // D < 0, read to the left; return in normal order; move pointer left
-            const start = p + D; // D negative
+            // D < 0, read to the left, return in normal order, move pointer left
+            const start = pointer + D; // D negative
             if (start < 0) {
                 this._forceActiveInsert = Z; // would move off left end
                 return "";
             }
-            const val = this._formSlice(name, start, p);
-            this.formPtr[name] = start;
-            return val;
+            const v = this._formSlice(name, start, pointer);
+            this.formPointers[name] = start;
+            return v;
         }
     }
 
     private async ["in"]() {
-        // #(in,N,X,Z)
         const name = this._arg(0);
         const X = this._arg(1);
         const Z = this._arg(2);
 
         if (!(name in this.forms)) return "";
 
-        this._ensurePtr(name);
-        const L = this._formTotalLen(name);
-        const p0 = this.formPtr[name];
+        this._ensurePointer(name);
+        const formLength = this._formLength(name);
+        const pointer = this.formPointers[name];
 
         const lenX = X.length;
-        // Empty X matches immediately at p0 (returns empty, pointer unchanged).
+        // Empty X matches immediately at pointer (returns empty, pointer unchanged).
         if (lenX === 0) return "";
 
         // Marker boundaries (positions in the marker-free coordinate space).
@@ -565,7 +559,7 @@ export class TRAC {
 
         // Search forward from p0 for the first valid match
         let foundAt: number | null = null;
-        for (let i = p0; i + lenX <= L; i++) {
+        for (let i = pointer; i + lenX <= formLength; i++) {
             if (hasBoundaryInside(i, i + lenX)) continue;
             const slice = this._formSlice(name, i, i + lenX);
             if (slice === X) {
@@ -581,16 +575,15 @@ export class TRAC {
         }
 
         // Value: substring from original pointer to char immediately preceding the match
-        const value = this._formSlice(name, p0, foundAt);
+        const value = this._formSlice(name, pointer, foundAt);
 
         // Move pointer to just before the char immediately following the matching substring
-        this.formPtr[name] = foundAt + lenX;
+        this.formPointers[name] = foundAt + lenX;
 
         return value;
     }
 
     private async eq() {
-        // #(eq,A,B,T,F) -> T if A==B else F (missing args -> "")
         const A = this._arg(0);
         const B = this._arg(1);
         const T = this._arg(2);
@@ -599,9 +592,8 @@ export class TRAC {
     }
 
     private async gr() {
-        // #(gr,A,B,T,F) -> T if A>B else F (missing args -> "")
-        const A = this._arg(0);
-        const B = this._arg(1);
+        const A = this._bigintArg(0);
+        const B = this._bigintArg(1);
         const T = this._arg(2);
         const F = this._arg(3);
         return A > B ? T : F;
@@ -656,9 +648,9 @@ export class TRAC {
         if (L === 0) return "";
         const a = this._padLeftWithZeros(A, L);
         const b = this._padLeftWithZeros(B, L);
-        let out = "";
-        for (let i = 0; i < L; i++) out += a[i] === "1" || b[i] === "1" ? "1" : "0";
-        return out;
+        let v = "";
+        for (let i = 0; i < L; i++) v += a[i] === "1" || b[i] === "1" ? "1" : "0";
+        return v;
     }
 
     private async bi() {
@@ -669,17 +661,17 @@ export class TRAC {
         if (L === 0) return "";
         const a = this._takeRight(A, L);
         const b = this._takeRight(B, L);
-        let out = "";
-        for (let i = 0; i < L; i++) out += a[i] === "1" && b[i] === "1" ? "1" : "0";
-        return out;
+        let v = "";
+        for (let i = 0; i < L; i++) v += a[i] === "1" && b[i] === "1" ? "1" : "0";
+        return v;
     }
 
     private async bc() {
         // Boolean Complement (bitwise NOT), same length as Boolean value
         const A = this._boolSuffix(this._arg(0));
-        let out = "";
-        for (let i = 0; i < A.length; i++) out += A[i] === "1" ? "0" : "1";
-        return out;
+        let v = "";
+        for (let i = 0; i < A.length; i++) v += A[i] === "1" ? "0" : "1";
+        return v;
     }
 
     private async bs() {
@@ -718,43 +710,33 @@ export class TRAC {
     }
 
     private async ln() {
-        /**
-         * #(ln,S) -> return all form names, separated by S.
-         */
-        const sep = this._arg(0);
+        const separator = this._arg(0);
         const names = Object.keys(this.forms);
-        return names.join(sep);
+        return names.join(separator);
     }
 
     private async da() {
-        /**
-         * #(da) -> delete all forms.
-         */
         this.forms = {};
-        this.formPtr = {};
+        this.formPointers = {};
         return "";
     }
 
     private async dd() {
-        /**
-         * #(dd,N1,N2,...) -> delete the forms N1, N2, ...
-         * Returns null string.
-         */
         for (let i = 0; i < this.args.length; i++) {
             const name = this._arg(i);
-            if (name in this.forms) {
-                delete this.forms[name];
-            }
-            if (name in this.formPtr) {
-                delete this.formPtr[name];
-            }
+            if (name in this.forms) delete this.forms[name];
+            if (name in this.formPointers) delete this.formPointers[name];
         }
         return "";
     }
 
     private async ps() {
         const x = this._arg(0);
-        if (x !== undefined && x !== null) this.output(String(x));
+        if (x !== undefined && x !== null) {
+            const v = String(x);
+            this.output(v);
+            this.newline = v.length === 0 || v.at(-1) === "\n";
+        }
         return "";
     }
 
@@ -787,66 +769,52 @@ export class TRAC {
     }
 
     private async pf() {
-        // #(pf, N)  --> null-valued; prints the body of form N with
-        // the form pointer and segment markers shown.
-        //
-        // Pointer is shown as "<↑>".
-        // Segment markers are shown as "<i>" (i = ordinal).
+        // pointer is shown as "<↑>".
+        // segment markers are shown as "<i>" (i = ordinal)
         const name = this._arg(0);
         if (!(name in this.forms)) return "";
 
-        this._ensurePtr(name);
-        const pointer = this.formPtr[name];
-        const PTR = "<↑>";
+        this._ensurePointer(name);
+        const pointer = this.formPointers[name];
+        const MARK = "<↑>";
 
-        let out = "";
-        let pos = 0; // character index among literal chars (markers ignored)
+        let v = "";
+        let i = 0; // character index among literal chars (markers ignored)
         let pointerPrinted = false;
 
         const maybePrintPointerAt = (p: number) => {
             if (!pointerPrinted && pointer === p) {
-                out += PTR;
+                v += MARK;
                 pointerPrinted = true;
             }
         };
 
-        // console.log("-----------------------------------");
-        // this.forms[name]
-        // console.log(`Form ${this.forms[name].map((x) => JSON.stringify(x)).join(" + ")}`);
-        // console.log(`Pointer at ${pointer} of ${this._formTotalLen(name)}`);
-        // console.log(`Pos: ${pos}`);
-        // console.log("-----------------------------------");
         for (const part of this.forms[name]) {
             if (part instanceof Marker) {
-                // Pointer sits *before* the next character; if it equals this
-                // boundary position, show pointer first, then the marker.
-                maybePrintPointerAt(pos);
-                out += `<${part.n}>`;
+                maybePrintPointerAt(i);
+                v += `<${part.n}>`;
                 continue;
             }
             // literal string
             const s = part as string;
             const L = s.length;
 
-            // console.log(`Pos: ${pos}`);
-
             // If pointer falls inside this literal chunk, split once.
-            if (!pointerPrinted && pointer >= pos && pointer <= pos + L) {
-                const k = pointer - pos; // 0..L
-                // console.log(`adding [${s.slice(0, k)}] + PTR + [${s.slice(k)}]`);
-                out += s.slice(0, k) + PTR + s.slice(k);
+            if (!pointerPrinted && pointer >= i && pointer <= i + L) {
+                const k = pointer - i; // 0..L
+                v += s.slice(0, k) + MARK + s.slice(k);
                 pointerPrinted = true;
             } else {
-                // console.log(`adding [${s}]`);
-                out += s;
+                v += s;
             }
-            pos += L;
+            i += L;
         }
 
         // Pointer at end of form
-        maybePrintPointerAt(pos);
+        maybePrintPointerAt(i);
 
-        this.output(out);
+        this.output(v);
+        this.newline = v.length === 0 || v.at(-1) === "\n";
         return "";
     }
 
@@ -866,58 +834,74 @@ export class TRAC {
     }
 
     private async tn() {
-        // trace on
-        return "N/A";
+        this.tracing = true;
+        return "";
     }
 
     private async tf() {
-        // trace off
-        return "N/A";
+        this.tracing = false;
+        return "";
     }
 
     private async qm() {
-        // query meta character
         return this.meta;
     }
 
     private async sl() {
-        // string length
         const arg = this._arg(0);
         return `${arg.length}`;
     }
 
     private async cd() {
-        // character to decimal
         const arg = this._arg(0);
         if (arg.length === 0) return "0";
         return `${arg.codePointAt(0) ?? 0}`;
     }
 
     private async dc() {
-        // decimal to character
         const n = this._bigintArg(0);
         if (n < 0n || n > 0x10ffffn) return "";
         return String.fromCodePoint(Number(n));
     }
 
-    //     // sr
+    private async sr() {
+        const name = this._arg(0);
+        if (!(name in this.forms)) return "0";
+
+        const parts = this.forms[name];
+        const seen = new Set<number>();
+        let max = 0;
+
+        for (const part of parts) {
+            if (part instanceof Marker) {
+                seen.add(part.n);
+                if (part.n > max) max = part.n;
+            }
+        }
+
+        if (max === 0) return "0"; // no markers -> no gaps
+
+        // if any 1..max missing -> return max, else 0
+        for (let i = 1; i <= max; i++) {
+            if (!seen.has(i)) return String(max);
+        }
+        return "0";
+    }
 
     private async cr() {
-        // Overloaded "cr":
-        //  - #(cr,N)                -> Call Restore (null-valued)
-        //  - #(cr,R1,R2,V)          -> Change radix (existing)
+        // #(cr,N)  -> Call Restore (null-valued)
+        // #(cr,R1,R2,V)  -> Change radix (existing)
 
         if (this.args.length === 1) {
             // --- Call Restore ---
             const name = this._arg(0);
             if (name in this.forms) {
-                this._ensurePtr(name);
-                this.formPtr[name] = 0; // reset to just before the first character
+                this._ensurePointer(name);
+                this.formPointers[name] = 0; // reset to just before the first character
             }
             return "";
         }
 
-        // --- Change Radix (existing) ---
         const V = this._arg(2).toUpperCase();
         const r1 = this._arg(0).toUpperCase();
         const r2 = this._arg(1).toUpperCase();
@@ -927,7 +911,7 @@ export class TRAC {
         const R2 = RADIXES.indexOf(r2) + 1;
         if (R1 < 1 || R1 > 36 || R2 < 1 || R2 > 36) return "";
 
-        // Convert V from base R1 to an integer
+        // convert V from base R1 to an integer
         let v = 0n;
         for (let i = 0; i < V.length; i++) {
             const digit = RADIXES.indexOf(V[i]);
@@ -937,7 +921,7 @@ export class TRAC {
 
         if (v === 0n) return "0";
 
-        // Convert integer to base R2
+        // convert integer to base R2
         let result = "";
         while (v > 0n) {
             const remainder = Number(v % BigInt(R2));
@@ -950,11 +934,22 @@ export class TRAC {
     private async hl() {
         throw new Halt();
     }
-    //     // ai
-    //     // ao
-    //     // sp
-    //     // rp
-    //     // rs 2
+
+    private async ai() {
+        return "N/A";
+    }
+
+    private async ao() {
+        return "N/A";
+    }
+
+    private async sp() {
+        return "N/A";
+    }
+
+    private async rp() {
+        return "N/A";
+    }
 
     private _arg(i: number): string {
         return i < this.args.length ? this.args[i] : "";
@@ -962,13 +957,13 @@ export class TRAC {
 
     private _bigintArg(i: number): bigint {
         const s = this._arg(i) || "0";
-        // Support optional leading '+' and decimal representation
+        // Support optional leading '+' and decimal representation.
         // BigInt doesn't like plus signs, so normalize.
         const norm = s.trim().replace(/^\+/, "") || "0";
         try {
             return BigInt(norm);
         } catch {
-            // Fallback if not a valid integer string
+            // Fallback if not a valid integer string.
             return 0n;
         }
     }
@@ -1005,7 +1000,7 @@ if (import.meta.main) {
 
         const input: string[] = [];
         for (const file of files) {
-            const data = file.at(0) == "@" ? file.slice(1) : await Bun.file(file).text();
+            const data = file.at(0) == "@" ? file.slice(1) : fs.readFileSync(file, "utf-8");
             input.push(data);
         }
 
@@ -1013,4 +1008,11 @@ if (import.meta.main) {
         await trac.run();
         console.log();
     }
+}
+
+function hasFunction<T extends object>(
+    obj: T,
+    key: PropertyKey
+): obj is T & Record<typeof key, (...args: any[]) => any> {
+    return typeof (obj as any)[key] === "function";
 }

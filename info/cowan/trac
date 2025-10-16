@@ -1,0 +1,614 @@
+#!/usr/bin/perl
+# The main TRAC interpreter.
+# Copyright 1994 by John Cowan.  All rights reserved.
+
+# System variables:
+#	$active - the string being scanned for macro invocations
+#	$trace - true if tracing is in effect
+#	@args - a stack of all arguments of all pending invocations
+#		(note: the macro name is also pushed here)
+#	@mactype - a stack of invocation types for all pending invocations,
+#		where 1 is active and 0 is neutral
+#	@macnargs - a stack of argument counts for all pending invocations
+#	@macname - a stack of the index in @args of the macro name
+#		for all pending invocations
+#	The @mac* arrays are kept in synchrony.
+
+#	%meta - associates handles to meta characters
+
+#	%form - associates form name to form body
+#	%formptr - associates form name to form pointer (an index, really)
+#	%formsrc - associates form name to source filename
+#	%formargs - associates form name to number of formal args
+#	The %form* arrays are kept in synchrony.
+
+open(TTY, "+</dev/tty");
+$meta{STDIN} = "'";	# FIXME
+
+$form{"ARGV"} = join(pack("C", 0200), @ARGV);
+$formptr{"ARGV"} = 0;
+$formargs{"ARGV"} = 1;
+
+@env = ();
+$marker = pack("C", 0201);
+while (($key, $value) = each %ENV) {
+	push (@env, $key . $marker . $value);
+	}
+$form{"ENV"} = join(pack("C", 0200), @env);
+$formptr{"ENV"} = 0;
+$formargs{"ENV"} = 2;
+undef @env;
+
+for (;;) {
+	$active = "#(ps,#(rs,,(#(ex))))";
+	$#args = $#mactype = $#macnargs = $#macname = -1;
+	push(@args, "")			;
+	while (length($active)) {	
+		($normals, $key) = $active =~ /^([^\t\n#,()]*)([\t\n#,()])/;
+		$args[$#args] .= $normals;
+		substr($active, 0, length($normals) + 1) = "";
+		if ($key eq "\t" || $key eq "\n") {
+			# skip tabs and newlines
+			}
+		elsif ($key eq "#" && substr($active, 0, 1) eq "(") {
+			substr($active, 0, 1) = "";
+			&begin(1);
+			}
+		elsif ($key eq "#" && substr($active, 0, 2) eq "#(") {
+			substr($active, 0, 2) = "";
+			&begin(0);
+			}
+		elsif ($key eq "(") {
+			&quote;
+			}
+		elsif ($key eq "," && $#mactype >= 0) {
+			push(@args, "");
+			$macnargs[$#macnargs]++;
+			$active =~ s/^ *//;
+			}
+		elsif ($key eq ")" && $#mactype >= 0) {
+			&invoke;
+			}
+		else {
+			$args[$#args] .= $key;
+			}
+		}
+	}
+
+sub begin {
+	local($mactype) = @_;
+	push(@mactype,$mactype);
+	push(@macnargs,0);
+	push(@args,"");
+	push(@macname,$#args);
+	}
+
+sub quote {
+	local($normals, $paren);
+	local($depth) = 1;
+	while (length($active)) {
+		($normals, $paren) = $active =~ /([^()]*)([()])/;
+		$args[$#args] .= $normals;
+		substr($active, 0, length($normals) + 1) = "";
+		if ($paren eq "(") {
+			$depth++;
+			$args[$#args] .= $paren;
+			}
+		else {
+			$depth--;
+			last if $depth <= 0;
+			$args[$#args] .= $paren;
+			}
+		}
+	}
+
+sub invoke {
+	local($macindex) = $macname[$#macname];
+	local($macro) = $args[$macindex];
+	local($result);
+	@_ = @args[$macindex + 1 .. $macindex + $macnargs[$#macnargs]];
+
+	if ($trace) {
+		local(@args) = @_;
+		print TTY "*** TRACE $macro: ";
+		print TTY join(", ", grep($_ = "`$_'", @args)), "? ";
+		$/ = "\n";
+		$result = <TTY>;
+		}
+	INVOKE: {
+		&rs, last INVOKE if $macro eq "rs";
+		&rs, last INVOKE if $macro eq "read string";
+		&rc, last INVOKE if $macro eq "rc";
+		&rc, last INVOKE if $macro eq "read character";
+		&ps, last INVOKE if $macro eq "ps";
+		&ps, last INVOKE if $macro eq "print string";
+		&cm, last INVOKE if $macro eq "cm";
+		&cm, last INVOKE if $macro eq "change meta";
+		&ds, last INVOKE if $macro eq "ds";
+		&ds, last INVOKE if $macro eq "define string";
+		&ss, last INVOKE if $macro eq "ss";
+		&ss, last INVOKE if $macro eq "segment string";
+		&cl, last INVOKE if $macro eq "cl";
+		&cl, last INVOKE if $macro eq "call";
+		&dd, last INVOKE if $macro eq "dd";
+		&dd, last INVOKE if $macro eq "delete definition";
+		&da, last INVOKE if $macro eq "da";
+		&da, last INVOKE if $macro eq "delete all";
+		&cs, last INVOKE if $macro eq "cs";
+		&cs, last INVOKE if $macro eq "call segment";
+		&cc, last INVOKE if $macro eq "cc";
+		&cc, last INVOKE if $macro eq "call characters";
+		&in, last INVOKE if $macro eq "in";
+		&in, last INVOKE if $macro eq "initial";
+		&cr, last INVOKE if $macro eq "cr";
+		&cr, last INVOKE if $macro eq "call reset";
+		&ad, last INVOKE if $macro eq "ad";
+		&ad, last INVOKE if $macro eq "+";
+		&su, last INVOKE if $macro eq "su";
+		&su, last INVOKE if $macro eq "-";
+		&ml, last INVOKE if $macro eq "ml";
+		&ml, last INVOKE if $macro eq "*";
+		&dv, last INVOKE if $macro eq "dv";
+		&dv, last INVOKE if $macro eq "/";
+		&eq, last INVOKE if $macro eq "eq";
+		&eq, last INVOKE if $macro eq "=";
+		&gr, last INVOKE if $macro eq "gr";
+		&gr, last INVOKE if $macro eq ">";
+		&bu, last INVOKE if $macro eq "bu";
+		&bu, last INVOKE if $macro eq "|";
+		&bi, last INVOKE if $macro eq "bi";
+		&bi, last INVOKE if $macro eq "&";
+		&bc, last INVOKE if $macro eq "bc";
+		&bc, last INVOKE if $macro eq "~";
+		&tn, last INVOKE if $macro eq "tn";
+		&tn, last INVOKE if $macro eq "trace on";
+		&tf, last INVOKE if $macro eq "tf";
+		&tf, last INVOKE if $macro eq "trace off";
+		&ln, last INVOKE if $macro eq "ln";
+		&ln, last INVOKE if $macro eq "list names";
+		&pf, last INVOKE if $macro eq "pf";
+		&pf, last INVOKE if $macro eq "print form";
+		&sb, last INVOKE if $macro eq "sb";
+		&sb, last INVOKE if $macro eq "save block";
+		&fb, last INVOKE if $macro eq "fb";
+		&fb, last INVOKE if $macro eq "fetch block";
+		&eb, last INVOKE if $macro eq "eb";
+		&eb, last INVOKE if $macro eq "erase block";
+		&oi, last INVOKE if $macro eq "oi";
+		&oi, last INVOKE if $macro eq "open input";
+		&oo, last INVOKE if $macro eq "oo";
+		&oo, last INVOKE if $macro eq "open output";
+		&oa, last INVOKE if $macro eq "oa";
+		&oa, last INVOKE if $macro eq "open append";
+		&cf, last INVOKE if $macro eq "cf";
+		&cf, last INVOKE if $macro eq "close file";
+		&ld, last INVOKE if $macro eq "ld";
+		&ld, last INVOKE if $macro eq "load";
+		&sy, last INVOKE if $macro eq "sy";
+		&sy, last INVOKE if $macro eq "system";
+		&ex, last INVOKE if $macro eq "ex";
+		&ex, last INVOKE if $macro eq "exit";
+		}
+	pop @macnargs;
+	$#args = (pop @macname) - 1;
+	if (pop @mactype) {
+		substr($active, 0, 0) = $result;
+		}
+	else {
+		@args[$#args] .= $result;
+		}
+	}
+
+sub rs {
+	local($handle,$default) = @_;
+	$handle = STDIN if $handle eq "";
+	$/ = $meta{$handle};
+	$result = <$handle>;
+	if ($result eq "") {
+		$mactype[$#mactype] = 1;
+		$result = $default;
+		}
+	else {
+		chop $result;
+		}
+	}
+
+sub ps {
+	local($text, $handle) = @_;
+	$handle = "STDOUT" if $handle eq "";
+	print $handle $text;
+	$result = "";
+	}
+
+sub rc {
+	local($handle) = @_;
+	$handle = STDIN if $handle eq "";
+	$result = getc($handle);
+	}
+
+sub cm {
+	local($char, $handle) = @_;
+	local($oldmeta);
+	$handle = STDIN if $handle eq "";
+	$oldmeta = $meta{$handle};
+	$meta{$handle} = substr($char,0,1);
+	$result = $oldmeta;
+	}
+
+sub ds {
+	local($name,$form) = @_;
+	$form{$name} = $form;
+	$formargs{$name} = 0;
+	$formptr{$name} = 0;
+	$result = "";
+	}
+
+sub ss {
+	local($name,@args) = @_;
+	local($form, $i, $marker);
+
+	$form = $form{$name};
+	foreach $i (0..$#args) {
+		$args[$i] =~ s/(\W)/\\\1/g;
+		$marker = pack("C", 0200 + $i);
+		$form =~ s/$args[$i]/$marker/g;
+		}
+	$form{$name} = $form;
+	$formptr{$name} = 0;
+	$formargs{$name} = @args;
+	$result = "";
+	}
+
+sub cl {
+	local($name,@args) = @_;
+	local($i, $marker);
+
+	$result = $form{$name};
+	foreach $i (0..$formargs{$name} - 1) {
+		$marker = pack("C", 0200 + $i);
+		$result =~ s/$marker/$args[$i]/g;
+		}
+	}
+
+sub dd {
+	local($name) = @_;
+	undef $form{$name};
+	undef $formptr{$name};
+	undef $formargs{$name};
+	undef $formsrc{$name};
+	}
+
+sub da {
+	local($name);
+	foreach $name (keys(%form)) {
+		&dd($name);
+		}
+	}
+
+sub cs {
+	local($name,$default) = @_;
+	local($form) = $form{$name};
+	local($fp) = $formptr{$name};
+	local($ch);
+
+	if ($fp == -1) {
+		$result = $default;
+		$mactype[$#mactype] = 1;
+		return;
+		}
+	$result = "";
+	for (;;) {
+		$ch = substr($form, $fp, 1);
+		last if $ch eq "" || ord($ch) >= 0200;
+		$result .= $ch;
+		$fp++;
+		}
+	$formptr{$name} = ($ch eq "") ? -1 : $fp + 1;
+	}
+
+sub cc {
+	local($name, $default) = @_;
+	local($form) = $form{$name};
+	local($fp) = $formptr{$name};
+
+	$result = substr($form, $fp, 1);
+	if ($result eq "") {
+		$fp = -1;
+		}
+	elsif (ord($result) >= 0200) {
+		$fp += 2;
+		}
+	else {
+		$formptr{$name}++;
+		return;
+		}
+	$formptr{$name} = $fp;
+	$result = $default;
+	$mactype[$#mactype] = 1;
+	}
+
+sub in {
+	local($name,$pat,$default) = @_;
+	local($form) = $form{$name};
+	local($fp) = $formptr{$name};
+	local($pos);
+
+	$pos = index($form, $pat, $fp);
+	if ($pos != -1) {
+		$result = "";
+		$fp = $pos + length($pat);
+		$fp = -1 if $fp > length($form);
+		$fp++ if ord(substr($form, $fp, 1)) >= 0200;
+		$formptr{$name} = $fp;
+		}
+	else {
+		$result = $default;
+		$mactype[$#mactype] = 1;
+		}
+	}
+
+sub cr {
+	local($name) = @_;
+	$formptr{$name} = 0;
+	}
+
+sub tn {
+	$trace = 1;
+	}
+
+sub tf {
+	$trace = 0;
+	}
+
+sub ln {
+	$result = join(" ", keys %form);
+	}
+
+sub mung_form {
+	local($i, $marker);
+
+	$result =~ s/\\/\\\\/;
+	foreach $i (0..$formargs{$name} - 1) {
+		$marker = pack("C", 0200 + $i);
+		$result =~ s/$marker/\\$i\\/g;
+		}
+	}
+
+sub pf {
+	local($name, $handle) = @_;
+
+	$result = $form{$name};
+	$handle = "STDOUT" if $handle eq "";
+	&mung_form;
+	print $handle $result, "\n";
+	$result = "";
+	}
+
+sub oi {
+	local($handle,$filename,$default) = @_;
+
+	$result = "";
+	$meta{$handle} = $meta{STDIN};
+	return if open($handle,"<$filename");
+	$result = $default;
+	$mactype[$#mactype] = 1;
+	}
+
+sub oo {
+	local($handle,$filename,$default) = @_;
+
+	$result = "";
+	return if open($handle,">$filename");
+	$result = $default;
+	$mactype[$#mactype] = 1;
+	}
+
+sub oa {
+	local($handle,$filename,$default) = @_;
+
+	$result = "";
+	return if open($handle,">>$filename");
+	$result = $default;
+	$mactype[$#mactype] = 1;
+	}
+
+sub cf {
+	local($handle) = @_;
+
+	close($handle);
+	$result = "";
+	}
+
+sub ld {
+	local($filename, $default) = @_;
+	local(*LOAD);
+
+	open(LOAD, "<$filename") ||
+		(($result = $default), ($mactype[$#mactype] = 1), return);
+	$/ = "";
+	$result = <LOAD>;
+	close(LOAD);
+	}
+
+sub sy {
+	local($command) = @_;
+
+	$result = system($command);
+	}
+
+sub ex {
+	local($value) = @_;
+
+	exit $value;
+	}
+
+sub sb {
+	local($filename, @names) = @_;
+	local(*BLOCK);
+
+	$result = "";
+	open(BLOCK, ">$filename") ||
+		warn "sb: open failed: $!\n", return;
+	if (@names == 0) {
+		foreach $name (keys %formsrc) {
+			next if $formsrc{$name} != $filename;
+			$result = $form{$name};
+			&mung_form;
+			$name =~ s/\\/\\\\/;
+			print BLOCK "$name\\=$result\\;\n";
+			}
+		}
+	else {
+		foreach $name (@names) {
+			$formsrc{$name} = $filename;
+			print BLOCK "$name\\=";
+			$result = $form{$name};
+			&mung_form;
+			print BLOCK "$result\\;\n";
+			}
+		}
+	close(BLOCK);
+	$result = "";
+	}
+
+sub fb {
+	local($filename) = @_;
+	local($pos, $name, $form, $nargs, $marker);
+	local(*BLOCK);
+
+	open(BLOCK, $filename) ||
+		warn "fb: open failed: $!\n", return;
+	$/ = "\\;\n";
+	while (<BLOCK>) {
+		chop; chop; chop;
+		$pos = index($_, "\\=");
+		$name = substr($_, 0, $pos);
+		$form = substr($_, $pos + 2);
+		$name =~ s/\\\\/\\/;
+		for ($nargs = 0; ; $nargs++) {
+			$marker = pack("C", 0200 + $nargs);
+			last unless $form =~ s/\\$nargs\\/$marker/g;
+			}
+		$form =~ s/\\\\/\\/;
+		$form{$name} = $form;
+		$formptr{$name} = 0;
+		$formsrc{$name} = $filename;
+		$formargs{$name} = $nargs;
+		}
+	close(BLOCK);
+	$result = "";
+	}
+
+sub tracnum {
+	local($value) = @_;
+	local($sign, $prefix, $digits);
+
+	($sign, $prefix, $digits) = $value =~ /([+-]?)(\D*)(\d*)/;
+	wantarray ? ($prefix, $sign . $digits) : $sign . $digits;
+	}
+
+sub makenum {
+	local($value, $prefix, $default) = @_;
+
+	if ($value =~ /e/) {
+		$mactype[$#mactype] = 1;
+		return $default;
+		}
+	elsif ($value < 0) {
+		$value = -$value;
+		return "-" . $prefix . $value;
+		}
+	else {
+		return $prefix . $value;
+		}
+	}
+
+
+sub ad {
+	local($n1, $n2, $default) = @_;
+	local($prefix);
+
+	($prefix, $n1) = &tracnum($n1);
+	$n2 = &tracnum($n2);
+	$result = &makenum($n1 + $n2, $prefix, $default);
+	}
+
+sub su {
+	local($n1, $n2, $default) = @_;
+	local($prefix);
+
+	($prefix, $n1) = &tracnum($n1);
+	$n2 = &tracnum($n2);
+	$result = &makenum($n1 - $n2, $prefix, $default);
+	}
+
+sub ml {
+	local($n1, $n2, $default) = @_;
+	local($prefix);
+
+	($prefix, $n1) = &tracnum($n1);
+	$n2 = &tracnum($n2);
+	$result = &makenum($n1 * $n2, $prefix, $default);
+	}
+
+sub dv {
+	local($n1, $n2, $default) = @_;
+	local($prefix);
+
+	($prefix, $n1) = &tracnum($n1);
+	$n2 = &tracnum($n2);
+	if ($n2 == 0) {
+		$result = $default;
+		$mactype[$#mactype] = 1;
+		return;
+		}
+	$result = &makenum(int($n1 / $n2), $prefix, $default);
+	}
+
+sub bu {
+	local($n1, $n2) = @_;
+	local($prefix);
+
+	($prefix, $n1) = &tracnum($n1);
+	$n2 = &tracnum($n2);
+	$result = &makenum($n1 | $n2, $prefix, "");
+	}
+
+sub bi {
+	local($n1, $n2) = @_;
+	local($prefix);
+
+	($prefix, $n1) = &tracnum($n1);
+	$n2 = &tracnum($n2);
+	$result = &makenum($n1 & $n2, $prefix, "");
+	}
+
+sub bc {
+	local($n1) = @_;
+	local($prefix);
+
+	($prefix, $n1) = &tracnum($n1);
+	$result = &makenum(~ $n1, $prefix, "");
+	}
+
+sub eq {
+	local($x1, $x2, $then, $else) = @_;
+
+	if ($x1 eq $x2) {
+		$result = $then;
+		}
+	else {
+		$result = $else;
+		}
+	}
+
+sub gr {
+	local($x1, $x2, $then, $else) = @_;
+
+	if ($x1 > $x2) {
+		$result = $then;
+		}
+	else {
+		$result = $else;
+		}
+	}

@@ -1,0 +1,14 @@
+name: ci
+on:
+    push:
+        paths-ignore: ["README.md"]
+    workflow_dispatch:
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v5
+            - uses: oven-sh/setup-bun@v2
+            - uses: extractions/setup-just@v3
+            - run: just ci
+            - run: just test-docker

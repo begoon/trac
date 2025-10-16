@@ -1,11 +1,12 @@
 {
-  "name": "trac",
-  "private": true,
-  "devDependencies": {
-    "@types/bun": "latest",
-    "@types/node": "^24.7.2"
-  },
-  "peerDependencies": {
-    "typescript": "^5.9.3"
-  }
+    "name": "trac",
+    "private": true,
+    "type": "module",
+    "devDependencies": {
+        "@types/bun": "latest",
+        "@types/node": "^24.7.2"
+    },
+    "peerDependencies": {
+        "typescript": "^5.9.3"
+    }
 }

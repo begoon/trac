@@ -1,0 +1,10 @@
+#(ds,other,(#(su,6,#(ad,this,that))))'
+#(ss,other,this,that)'
+
+#(ds,hanoi,(#(gr,N,1,
+(#(cl,hanoi,this,#(cl,other,this,that),#(su,N,1))#(ps,from this to that##(dc,10))#(cl,hanoi,#(cl,other,this,that),that,#(su,N,1))),
+(#(ps,from this to that##(dc,10)))
+)))'
+#(ss,hanoi,this,that,N)'
+
+#(hanoi,1,3,3)'
