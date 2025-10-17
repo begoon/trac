@@ -1,0 +1,16 @@
+#(ds,dots,(#(ds,T,(A))#(ss,T,0,1)#(cl,T,.,1)))'
+#(ss,dots,A)'
+
+#(ds,r110,(#(bu,#(bu,#(bi,#(bc,#(bs,-1,A)),A),#(bi,#(bs,1,A),#(bc,A))),#(bi,#(bi,#(bs,-1,A),A),#(bc,#(bs,1,A))))))'
+#(ss,r110,A)'
+
+#(ds,rep,(#(gr,N,0,(S#(cl,rep,S,#(su,N,1))),)))'
+#(ss,rep,S,N)'
+
+#(ds,seed,(#(cl,rep,0,L)1#(cl,rep,0,L)))'
+#(ss,seed,L)'
+
+#(ds,run,(#(ps,#(cl,dots,A))#(ps,##(dc,10))#(gr,N,0,(#(cl,run,#(cl,r110,A),#(su,N,1))),)))'
+#(ss,run,A,N)'
+
+#(ds,L,15)'#(ds,STEPS,10)'#(cl,run,#(cl,seed,#(cl,L)),#(cl,STEPS))'
