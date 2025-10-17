@@ -4,13 +4,13 @@
 
 The repository contains a TRAC interpreter described in the book [Etudes for Programmers](https://dl.acm.org/doi/10.5555/1096892) (1978) by Charles Wetherell.
 
-The interpreter is written in JavaScript and implements what is called the original TRAC-64 definition of the languages.
+The interpreter is written in JavaScript and implements what is called the original TRAC-64 definition of the language.
 
 To run the interpreter, you need either `node` (24+), `bun` or `deno`.
 
 The interpreter also implements additional functions and an ability to call forms as functions by name, suggested by Charles Wetherell as an extension of the etude.
 
-All functions are covered unit tests.
+All functions are covered by unit tests.
 
 NOTE: However, there are a few unimplemented functions: external stream I/O (`ai`, `ao`, `sp`, `rp`) and external block I/O (`sb`, `fb`, `eb`).
 
