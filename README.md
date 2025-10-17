@@ -40,7 +40,7 @@ node trac.ts examples/factorial.trac
 30414093201713378043612608166064768844377641568960512000000000000
 ```
 
-### Hanoi puzze solever
+### Hanoi puzze solver
 
 ```sh
 node trac.ts examples/hanoi.trac
