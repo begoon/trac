@@ -20,6 +20,9 @@ const cases = [
     ["#(ps,] )#(ps,#(rs))'XYZ'", "] XYZ"],
     //
     ["((3+4))*9 = #(ml,#(ad,3,4),9)'", "(3+4)*9 = 63"],
+    // ss
+    ["#(ds,x,ABCDEF)'#(ss,x,C)'#(ss,x,EF)'#(pf,x)'", "<↑>AB<1>D<1>"],
+    ["#(ds,x,ABCDECF)'#(ss,x,C)'#(pf,x)'", "<↑>AB<1>DE<1>F"],
     // cl, ln
     [multiline + "#(ps,#(ln,(,)))'", "            120Factorial  "],
     ["#(ds,AA,Cat)'#(ds,BB,(#(cl,AA)))'#(ps,##(ln,(,)))'", "AA,BB"],
