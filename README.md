@@ -25,8 +25,8 @@ npx trac64i
 
 TRAC interpreter (CTRL-C or #(hl)' to exit)
 
-TRAC> #(ps,hello)'
 TRAC> #(ps,hello)'hello
+TRAC>
 ```
 
 Or run directly from a checkout of this repository — `node` (24+), `bun`, or `deno` can all execute `trac.ts` without a build step.
@@ -133,6 +133,7 @@ bun install
 
 just test         # run the test suite (81 cases)
 just build        # tsc -> dist/
+just build-docs   # refresh docs/trac.js from the build (playground)
 just publish      # patch version + npm publish (maintainer only)
 ```
 
