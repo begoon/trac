@@ -17,11 +17,12 @@ All functions are covered by unit tests.
 Globally, as a CLI:
 
 ```sh
-npm install -g trac64i
+npx trac64i
 
-trac64i path/to/program.trac
-trac64i "@#(ps,hello)'"
-trac64i                    # interactive REPL
+TRAC interpreter (CTRL-C or #(hl)' to exit)
+
+TRAC> #(ps,hello)'
+TRAC> #(ps,hello)'hello
 ```
 
 Or run directly from a checkout of this repository — `node` (24+), `bun`, or `deno` can all execute `trac.ts` without a build step.
