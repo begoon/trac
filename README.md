@@ -12,6 +12,10 @@ Not implemented: external stream I/O (`ai`, `ao`, `sp`, `rp`) and external block
 
 All functions are covered by unit tests.
 
+## Playground
+
+Try it in the browser: **<https://begoon.github.io/trac/>** — editor, example dropdown, and a Run button. Code is saved to `localStorage`.
+
 ## Install
 
 Globally, as a CLI:
