@@ -9,6 +9,9 @@ test-watch:
 build:
     bunx tsc -p tsconfig.build.json
 
+build-docs: build
+    cp dist/trac.js docs/trac.js
+
 publish: test build
     npm version patch --no-git-tag-version
     npm publish
