@@ -1,12 +1,47 @@
 {
-    "name": "trac",
-    "private": true,
+    "name": "trac64i",
+    "version": "1.0.2",
+    "description": "TRAC-64 text-processing language interpreter (Etudes for Programmers, Ch. 7)",
     "type": "module",
+    "main": "./dist/trac.js",
+    "types": "./dist/trac.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/trac.d.ts",
+            "default": "./dist/trac.js"
+        }
+    },
+    "bin": {
+        "trac64i": "bin/trac.js"
+    },
+    "files": [
+        "dist/trac.js",
+        "dist/trac.d.ts",
+        "bin",
+        "examples"
+    ],
+    "scripts": {
+        "build": "tsc -p tsconfig.build.json",
+        "prepublishOnly": "npm run build",
+        "test": "bun test"
+    },
+    "keywords": [
+        "trac",
+        "trac64",
+        "trac64i",
+        "interpreter",
+        "text-processing",
+        "etude",
+        "wetherell"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/begoon/trac.git"
+    },
+    "license": "MIT",
     "devDependencies": {
         "@types/bun": "latest",
-        "@types/node": "^24.7.2"
-    },
-    "peerDependencies": {
+        "@types/node": "^24.7.2",
         "typescript": "^5.9.3"
     }
 }

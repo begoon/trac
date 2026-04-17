@@ -29,6 +29,20 @@ class Marker {
 }
 
 export class TRAC {
+    // Explicit allowlist of TRAC primitive names so arbitrary class methods
+    // (internal helpers, prototype methods) can't be invoked via #(name,...).
+    static readonly BUILTINS: ReadonlySet<string> = new Set([
+        "ds", "ss", "cl", "cs", "cc", "cn", "in",
+        "eq", "gr", "ml", "dv", "ad", "su",
+        "bu", "bi", "bc", "bs", "br",
+        "ln", "da", "dd",
+        "ps", "rc", "rs", "cm", "pf",
+        "sb", "fb", "eb",
+        "tn", "tf", "qm",
+        "sl", "cd", "dc", "sr", "cr", "hl",
+        "ai", "ao", "sp", "rp",
+    ]);
+
     forms: Record<string, Part[]> = {};
 
     // runtime working state (reset per record)
@@ -56,6 +70,7 @@ export class TRAC {
 
     formPointers: Record<string, number> = {}; // per-form pointers (character index, ignoring markers)
     private _forceActiveInsert: string | null = null; // request to force-active deliver a value from a builtin
+    private _inputWaiter: ((ch: string | undefined) => void) | null = null;
 
     constructor(
         input: string[] | string,
@@ -83,7 +98,7 @@ export class TRAC {
 
             // Step 3: control chars / apostrophe = record end
             if (this._skip_chars.has(ch)) {
-                this._delete_active_char();
+                this.scan++;
                 continue;
             }
 
@@ -98,7 +113,7 @@ export class TRAC {
 
             // Step 5: comma -> argument boundary
             if (ch === ",") {
-                this._delete_active_char();
+                this.scan++;
                 this._mark_argument_boundary();
                 continue;
             }
@@ -107,27 +122,25 @@ export class TRAC {
             if (ch === "#") {
                 if (this._peek("(")) {
                     // "#("
-                    this._delete_active_char();
-                    this._delete_active_char();
+                    this.scan += 2;
                     this._begin_function("active");
                     continue;
                 }
                 if (this._peek("#", "(")) {
                     // "##("
-                    this._delete_active_char();
-                    this._delete_active_char();
-                    this._delete_active_char();
+                    this.scan += 3;
                     this._begin_function("neutral");
                     continue;
                 }
                 // Step 8: a lone '#'
-                this._move_active_char_to_neutral();
+                this.neutral.push(ch);
+                this.scan++;
                 continue;
             }
 
             // Step 9: end of function
             if (ch === ")") {
-                this._delete_active_char();
+                this.scan++;
                 try {
                     await this._end_function_and_evaluate();
                 } catch (e) {
@@ -138,7 +151,8 @@ export class TRAC {
             }
 
             // Step 10: ordinary char
-            this._move_active_char_to_neutral();
+            this.neutral.push(ch);
+            this.scan++;
         }
 
         return this.neutral.join("");
@@ -157,17 +171,6 @@ export class TRAC {
         this.active = Array.from(program);
     }
 
-    private _delete_active_char() {
-        if (this.scan < this.active.length) {
-            this.active.splice(this.scan, 1);
-        }
-    }
-
-    private _move_active_char_to_neutral() {
-        this.neutral.push(this.active[this.scan]);
-        this._delete_active_char();
-    }
-
     private _peek(...expect: string[]): boolean {
         let i = this.scan + 1;
         if (i + expect.length - 1 >= this.active.length) return false;
@@ -178,28 +181,24 @@ export class TRAC {
     }
 
     private _consume_balanced_parentheses_into_neutral(): boolean {
-        this._delete_active_char(); // delete '('
+        this.scan++; // consume '('
         let depth = 1;
-        let i = this.scan;
-        while (i < this.active.length) {
-            const ch = this.active[i];
+        while (this.scan < this.active.length) {
+            const ch = this.active[this.scan];
             if (ch === "(") {
-                depth += 1;
+                depth++;
                 this.neutral.push(ch);
-                this.active.splice(i, 1);
             } else if (ch === ")") {
-                depth -= 1;
+                depth--;
                 if (depth === 0) {
-                    this.active.splice(i, 1); // delete matching ')'
+                    this.scan++; // consume matching ')'
                     return true;
                 }
                 this.neutral.push(ch);
-                this.active.splice(i, 1);
             } else {
                 this.neutral.push(ch);
-                this.active.splice(i, 1);
             }
-            // note: "i" doesn't increment because we remove from active
+            this.scan++;
         }
         return false;
     }
@@ -277,9 +276,9 @@ export class TRAC {
                 }
             }
             value = chunks.join("");
-        } else if (hasFunction(this, name)) {
+        } else if (TRAC.BUILTINS.has(name)) {
             // 2. else fall back to a builtin of that name (if any)
-            value = await this[name]();
+            value = await (this as any)[name]();
         } else {
             // 3. otherwise, undefined form/function -> null string by convention
             value = "";
@@ -740,13 +739,24 @@ export class TRAC {
         return "";
     }
 
-    private async rc() {
-        if (!this.interactive && this.input.length === 0) throw new Halt();
-
-        while (this.input.length === 0) {
-            await new Promise((resolve) => setTimeout(resolve, 100));
+    feedInput(s: string) {
+        for (const ch of s) {
+            if (this._inputWaiter) {
+                const resolve = this._inputWaiter;
+                this._inputWaiter = null;
+                resolve(ch);
+            } else {
+                this.input.push(ch);
+            }
         }
-        return this.input.shift();
+    }
+
+    private async rc() {
+        if (this.input.length > 0) return this.input.shift();
+        if (!this.interactive) throw new Halt();
+        return await new Promise<string | undefined>((resolve) => {
+            this._inputWaiter = resolve;
+        });
     }
 
     private async rs() {
@@ -968,29 +978,27 @@ export class TRAC {
     }
 }
 
-if (import.meta.main) {
+export async function cli() {
     if (process.argv.length < 3) {
         console.log("TRAC interpreter (CTRL-C or #(hl)' to exit)");
         process.stdin.setRawMode(true);
         process.stdin.resume();
         process.stdin.setEncoding("utf8");
 
-        const input: string[] = [];
+        function output(v: string) {
+            process.stdout.write(v);
+        }
+
+        const trac = new TRAC("", output, {
+            initial: "#(ps,##(dc,13)##(dc,10)TRAC> )#(ps,#(rs))",
+            interactive: true,
+        });
 
         process.stdin.on("data", (key: string) => {
             if (key === "\u0003") process.exit();
             if (key === "\r") key = "\n";
             process.stdout.write(key);
-            input.push(key);
-        });
-
-        function output(v: string) {
-            process.stdout.write(v);
-        }
-
-        const trac = new TRAC(input, output, {
-            initial: "#(ps,##(dc,13)##(dc,10)TRAC> )#(ps,#(rs))",
-            interactive: true,
+            trac.feedInput(key);
         });
         await trac.run();
         process.exit();
@@ -1009,9 +1017,10 @@ if (import.meta.main) {
     }
 }
 
-function hasFunction<T extends object>(
-    obj: T,
-    key: PropertyKey
-): obj is T & Record<typeof key, (...args: any[]) => any> {
-    return typeof (obj as any)[key] === "function";
+// import.meta.main is Bun-only (true when the module is the entry point).
+// Under Node this is undefined, so the guard is skipped there; the Node
+// entry point is bin/trac.js, which imports and calls cli() explicitly.
+if ((import.meta as any).main) {
+    await cli();
 }
+

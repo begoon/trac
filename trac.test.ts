@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import fs from "node:fs";
-import { TRAC } from "./trac.ts";
+import { TRAC } from "./trac.js";
 
 const multiline = `
     #(cl,Factorial,5
@@ -331,7 +331,7 @@ function file(name: string) {
 
 test.each(cases)("[%s] -> [%s]", async (input, output) => {
     let out: string = "";
-    const trac = new TRAC(input, (v) => (out += v));
+    const trac = new TRAC(input, (v: string) => (out += v));
     await trac.run();
     expect(out).toBe(output);
 });

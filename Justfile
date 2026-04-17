@@ -1,10 +1,22 @@
-abc:
+default: test
 
-factorial:
-    bun trac.ts "@#(ps,50!=)'" examples/factorial.trac
+test:
+    bun test
 
 test-watch:
     bun test --watch
 
-ci:
-    bun test
+build:
+    bunx tsc -p tsconfig.build.json
+
+publish: test build
+    npm version patch --no-git-tag-version
+    npm publish
+
+clean:
+    rm -rf dist
+
+factorial:
+    bun trac.ts "@#(ps,50!=)'" examples/factorial.trac
+
+ci: test
